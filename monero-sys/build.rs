@@ -1,6 +1,41 @@
+use std::process::Command;
+
 use cmake::Config;
 
 fn main() {
+    // On windows we use vcpkg to build the monero dependencies -- not on macos or linux because
+    // its not absolutely necessary and takes a long time to build
+    #[cfg(target_os = "windows")]
+    {
+        println!("cargo:debug=Building Monero dependencies with vcpkg");
+
+        let output = Command::new("cargo-vcpkg")
+            .args(["--verbose", "build"])
+            .env(
+                "VCPKG_OVERLAY_PORTS",
+                "../../monero-sys/vendor/vcpkg-overlays/unbound", // starts at core/target/vcpkg/
+            )
+            .output()
+            .expect("Failed to build vcpkg dependencies");
+
+        println!(
+            "cargo:debug=Vcpkg stderr output:\n{}",
+            String::from_utf8(output.stdout).unwrap()
+        );
+
+        println!("cargo:debug=Finding vcpkg dependencies");
+
+        vcpkg::find_package("zeromq").unwrap();
+        vcpkg::find_package("unbound").unwrap();
+        vcpkg::find_package("openssl").unwrap();
+        vcpkg::find_package("boost").unwrap();
+        vcpkg::find_package("libusb").unwrap();
+        vcpkg::find_package("libsodium").unwrap();
+        vcpkg::find_package("protobuf-c").unwrap();
+    }
+
+    println!("cargo:warn=Building Monero");
+
     let is_github_actions: bool = std::env::var("GITHUB_ACTIONS").is_ok();
     let is_docker_build: bool = std::env::var("DOCKER_BUILD").is_ok();
 
@@ -141,6 +176,7 @@ fn main() {
         monero_build_dir.join("src/rpc").display()
     );
 
+    // On macos we use homebrew to install the monero dependencies
     #[cfg(target_os = "macos")]
     {
         // Dynamically detect Homebrew installation prefix (works on both Apple Silicon and Intel Macs)
@@ -173,6 +209,8 @@ fn main() {
         println !("cargo:rustc-link-search=native=/Library/Developer/CommandLineTools/usr/lib/clang/17.0.0/lib/darwin");
         println !("cargo:rustc-link-search=native=/Library/Developer/CommandLineTools/usr/lib/clang/18.0.0/lib/darwin");
     }
+
+    // On linux we use apt to install the monero dependencies, they are found automatically
 
     // Link libwallet and libwallet_api statically
     println!("cargo:rustc-link-lib=static=wallet");

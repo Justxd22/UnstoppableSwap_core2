@@ -3,9 +3,23 @@ name = "monero-sys"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata.vcpkg]
+git = "https://github.com/microsoft/vcpkg"
+rev = "ef7dbf9" # Other versions might not work with openssl (https://github.com/mcgoo/cargo-vcpkg/issues/20#issuecomment-2018977259)
+dependencies = [
+  "zeromq",
+  "unbound",
+  "openssl",
+  "boost",
+  "libusb",
+  "libsodium",
+  "protobuf-c",
+  "expat",
+]
+
 [dependencies]
 anyhow = "1.0.98"
-backoff = "0.4.0"
+backoff = { version = "0.4.0", features = ["tokio", "futures"] }
 cxx = "1.0.137"
 monero = { version = "0.12", features = ["serde_support"] }
 tokio = { version = "1.44.2", features = ["sync", "time", "rt"] }
@@ -14,6 +28,7 @@ tracing = "0.1.41"
 [build-dependencies]
 cmake = "0.1.54"
 cxx-build = "1.0.137"
+vcpkg = "0.2.15"
 
 [dev-dependencies]
 anyhow = "1.0.98"
