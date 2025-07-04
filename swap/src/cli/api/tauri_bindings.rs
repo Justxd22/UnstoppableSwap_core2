@@ -297,9 +297,9 @@ impl TauriHandle {
     ) -> Result<()> {
         #[cfg(not(feature = "tauri"))]
         {
-            return Err(anyhow!(
+            Err(anyhow!(
                 "Cannot resolve approval: Tauri feature not enabled."
-            ));
+            ))
         }
 
         #[cfg(feature = "tauri")]
@@ -323,28 +323,6 @@ impl TauriHandle {
         }
     }
 
-    pub async fn get_pending_approvals(&self) -> Result<Vec<ApprovalRequest>> {
-        #[cfg(not(feature = "tauri"))]
-        {
-            return Ok(Vec::new());
-        }
-
-        #[cfg(feature = "tauri")]
-        {
-            let pending_map = self
-                .0
-                .pending_approvals
-                .lock()
-                .map_err(|e| anyhow!("Failed to acquire approval lock: {}", e))?;
-
-            let approvals: Vec<ApprovalRequest> = pending_map
-                .values()
-                .map(|pending| pending.request.clone())
-                .collect();
-
-            Ok(approvals)
-        }
-    }
 }
 
 impl Display for ApprovalRequest {
@@ -566,7 +544,31 @@ impl TauriEmitter for Option<TauriHandle> {
     }
 }
 
-/// A handle for updating a specific background process's progress
+impl TauriHandle {
+
+    #[cfg(feature = "tauri")]
+    pub async fn get_pending_approvals(&self) -> Result<Vec<ApprovalRequest>> {
+        let pending_map = self
+            .0
+            .pending_approvals
+            .lock()
+            .map_err(|e| anyhow!("Failed to acquire approval lock: {}", e))?;
+
+        let approvals: Vec<ApprovalRequest> = pending_map
+            .values()
+            .map(|pending| pending.request.clone())
+            .collect();
+
+        Ok(approvals)
+    }
+
+    #[cfg(not(feature = "tauri"))]
+    pub async fn get_pending_approvals(&self) -> Result<Vec<ApprovalRequest>> {
+        Ok(Vec::new())
+    }
+}
+
+/// A handle for updating a specific background progress's progress
 ///
 /// # Examples
 ///

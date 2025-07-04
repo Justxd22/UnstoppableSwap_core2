@@ -11,6 +11,8 @@
 //! internally communicate with the wallet thread.
 
 mod bridge;
+use std::ffi::CStr;
+use std::os::raw::c_char;
 
 use std::{
     any::Any, cmp::Ordering, fmt::Display, ops::Deref, path::PathBuf, pin::Pin, str::FromStr,
@@ -21,12 +23,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use backoff::{future::retry_notify, retry_notify as blocking_retry_notify};
 use cxx::{let_cxx_string, CxxString, CxxVector, UniquePtr};
 use monero::Amount;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     oneshot,
 };
 
-use bridge::ffi;
+use bridge::ffi::{self, TransactionHistory};
+use typeshare::typeshare;
 
 /// A handle which can communicate with the wallet thread via channels.
 pub struct WalletHandle {
@@ -66,6 +70,10 @@ type AnyBox = Box<dyn Any + Send>;
 struct WalletManager {
     /// A wrapper around the raw C++ wallet manager pointer.
     inner: RawWalletManager,
+}
+
+struct WalletListener {
+    inner: *mut ffi::WalletListener,
 }
 
 /// This is our own wrapper around a raw C++ wallet manager pointer.
@@ -123,8 +131,33 @@ pub struct Daemon {
     pub ssl: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[typeshare]
+pub struct TransactionInfo {
+    #[serde(with = "monero_serde")]
+    pub fee: monero::Amount,
+    #[serde(with = "monero_serde")]
+    pub amount: monero::Amount,
+    #[typeshare(serialized_as = "number")]
+    pub confirmations: u64,
+    pub tx_hash: String,
+}
+
 /// A wrapper around a pending transaction.
 pub struct PendingTransaction(*mut ffi::PendingTransaction);
+
+/// A struct containing transaction history.
+pub struct TransactionHistoryHandle(*mut TransactionHistory);
+
+/// A struct containing a single transaction.
+pub struct TransactionInfoHandle(*mut ffi::TransactionInfo);
+
+// Safety: The underlying C++ object is thread-safe for immutable access once obtained from TransactionHistory.
+unsafe impl Send for TransactionHistoryHandle {}
+unsafe impl Sync for TransactionHistoryHandle {}
+
+unsafe impl Send for TransactionInfoHandle {}
+unsafe impl Sync for TransactionInfoHandle {}
 
 impl WalletHandle {
     /// Open an existing wallet or create a new one, with a random seed.
@@ -410,6 +443,45 @@ impl WalletHandle {
         .map_err(|e| anyhow!("Failed to transfer funds after multiple attempts: {e}"))
     }
 
+    /// Transfer funds to an address with limited retries for GUI usage.
+    /// Only retries once instead of the default exponential backoff strategy.
+    pub async fn transfer_gui(
+        &self,
+        address: &monero::Address,
+        amount: monero::Amount,
+    ) -> anyhow::Result<TxReceipt> {
+        let address = *address;
+
+        // Try the transfer
+        match self
+            .call(move |wallet| wallet.transfer(&address, amount))
+            .await
+        {
+            Ok(receipt) => Ok(receipt),
+            Err(first_error) => {
+                tracing::warn!(error=%first_error, "First transfer attempt failed, retrying once");
+
+                // Single retry
+                match self
+                    .call(move |wallet| wallet.transfer(&address, amount))
+                    .await
+                {
+                    Ok(receipt) => {
+                        tracing::info!("Transfer succeeded on retry");
+                        Ok(receipt)
+                    }
+                    Err(second_error) => {
+                        tracing::error!(first_error=%first_error, second_error=%second_error, "Transfer failed after single retry");
+                        Err(anyhow!(
+                            "Failed to transfer funds after single retry: {}",
+                            second_error
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
     /// Sweep all funds to an address.
     pub async fn sweep(&self, address: &monero::Address) -> anyhow::Result<Vec<TxReceipt>> {
         let address = *address;
@@ -440,7 +512,7 @@ impl WalletHandle {
     /// wallet
     pub async fn sweep_multi(
         &self,
-        addresses: &[Option<monero::Address>],
+        addresses: &[monero::Address],
         percentages: &[f64],
     ) -> anyhow::Result<Vec<TxReceipt>> {
         tracing::debug!(addresses=?addresses, percentages=?percentages, "Sweeping multi");
@@ -450,6 +522,12 @@ impl WalletHandle {
 
         self.call(move |wallet| wallet.sweep_multi(&addresses, &percentages))
             .await
+    }
+
+    /// Get the transaction history and convert it to a list of serializable transaction infos.
+    /// This is needed because TransactionHistory and TransactionInfo are not Send.
+    pub async fn history(&self) -> Vec<TransactionInfo> {
+        self.call(move |wallet| wallet.history()).await
     }
 
     /// Get the unlocked balance of the wallet.
@@ -693,6 +771,8 @@ impl Wallet {
     fn run(&mut self) {
         while let Some(call) = self.call_receiver.blocking_recv() {
             let result = (call.function)(&mut self.wallet);
+
+            // TODO: Do not panic here
             call.sender
                 .send(result)
                 .expect("failed to send result back to caller");
@@ -951,13 +1031,49 @@ impl WalletManager {
         let network_type = network_type.into();
         let kdf_rounds = Self::DEFAULT_KDF_ROUNDS;
 
+        unsafe extern "C" fn on_spent(txid: *const c_char, amount: u64) {
+            let txid_str = if txid.is_null() {
+                "<null>".into()
+            } else {
+                // безопасное преобразование в строку
+                CStr::from_ptr(txid).to_string_lossy().into_owned()
+            };
+            println!("Spent {amount} in {txid_str}");
+        }
+
+        unsafe extern "C" fn on_received(txid: *const c_char, amount: u64) {
+            let txid_str = if txid.is_null() {
+                "<null>".into()
+            } else {
+                CStr::from_ptr(txid).to_string_lossy().into_owned()
+            };
+        }
+
+        unsafe extern "C" fn on_updated() {
+            println!("Updated");
+        }
+
+        let listener = unsafe {
+            ffi::create_listener(
+                on_spent as usize,
+                on_received as usize,
+                0 as usize,
+                0 as usize,
+                on_updated as usize,
+                0 as usize,
+                0 as usize,
+                0 as usize,
+                0 as usize,
+            )
+        };
+
         let wallet_pointer = unsafe {
             self.inner.pinned().openWallet(
                 &path,
                 &password,
                 network_type,
                 kdf_rounds,
-                std::ptr::null_mut(),
+                listener,
             )
         }
         .context("Failed to open wallet: FFI call failed with exception")?;
@@ -1149,7 +1265,7 @@ impl FfiWallet {
     /// Get the sync progress of the wallet as a percentage.
     ///
     /// Returns a zeroed sync progress if the daemon is not connected.
-    fn sync_progress(&self) -> SyncProgress {
+    pub fn sync_progress(&self) -> SyncProgress {
         let current_block = self
             .inner
             .blockChainHeight()
@@ -1281,8 +1397,6 @@ impl FfiWallet {
     /// Returns the height of the blockchain, if connected.
     /// Returns None if not connected.
     fn daemon_blockchain_height(&self) -> Option<u64> {
-        tracing::trace!(connected=%self.connected(), "Getting daemon blockchain height");
-
         // Here we actually use the _target_ height -- incase the remote node is
         // currently catching up we want to work with the height it ends up at.
         match self
@@ -1517,7 +1631,7 @@ impl FfiWallet {
     ) -> anyhow::Result<Vec<TxReceipt>> {
         tracing::warn!("STARTED MULTI SWEEP");
 
-        if addresses.len() == 0 {
+        if addresses.is_empty() {
             bail!("No addresses to sweep to");
         }
 
@@ -1668,6 +1782,23 @@ impl FfiWallet {
         amounts.push(remainder);
 
         Ok(amounts)
+    }
+
+    /// Get the transaction history.
+    fn history(&self) -> Vec<TransactionInfo> {
+        let history_ptr = unsafe { ffi::walletHistory(self.inner.inner) };
+        let history_handle = TransactionHistoryHandle(history_ptr.into_raw());
+        let count = history_handle.count();
+
+        let mut transactions = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            if let Some(tx_info_handle) = history_handle.transaction(i) {
+                if let Some(serialized_tx) = tx_info_handle.serialize() {
+                    transactions.push(serialized_tx);
+                }
+            }
+        }
+        transactions
     }
 
     /// Dispose (deallocate) a pending transaction object.
@@ -1888,6 +2019,100 @@ impl Deref for PendingTransaction {
     }
 }
 
+impl TransactionHistoryHandle {
+    /// Get the number of transactions in the history.
+    pub fn count(&self) -> i32 {
+        // Safety: self.0 is a valid *mut TransactionHistory
+        // The bridged count() method is safe to call on a valid reference.
+        unsafe { self.0.as_ref().unwrap().count() }
+    }
+
+    /// Get a transaction from the history by index.
+    pub fn transaction(&self, index: i32) -> Option<TransactionInfoHandle> {
+        // Safety: self.0 is a valid *mut TransactionHistory.
+        // The bridged transaction() method returns a raw pointer, which we immediately wrap.
+        let tx_info_ptr = unsafe { self.0.as_ref().unwrap().transaction(index) };
+
+        if tx_info_ptr.is_null() {
+            None
+        } else {
+            // We wrap the raw pointer in our safe wrapper struct.
+            Some(TransactionInfoHandle(tx_info_ptr))
+        }
+    }
+}
+
+impl TransactionInfoHandle {
+    /// Get the amount of the transaction.
+    pub fn amount(&self) -> Option<u64> {
+        // Safety: self.0 is a valid *mut ffi::TransactionInfo
+        // The bridged method is safe to call on a valid reference.
+        unsafe { self.0.as_ref().map(|info| info.amount()) }
+    }
+
+    /// Get the fee of the transaction.
+    pub fn fee(&self) -> Option<u64> {
+        // Safety: self.0 is a valid *mut ffi::TransactionInfo
+        // The bridged method is safe to call on a valid reference.
+        unsafe { self.0.as_ref().map(|info| info.fee()) }
+    }
+
+    /// Get the confirmations of the transaction.
+    pub fn confirmations(&self) -> Option<u64> {
+        // Safety: self.0 is a valid *mut ffi::TransactionInfo
+        // The bridged method is safe to call on a valid reference.
+        unsafe { self.0.as_ref().map(|info| info.confirmations()) }
+    }
+
+    /// Get the hash of the transaction.
+    pub fn hash(&self) -> Option<String> {
+        // Safety: self.0 is a valid *mut ffi::TransactionInfo
+        // The bridged method is safe to call on a valid reference.
+        unsafe {
+            self.0.as_ref().map(|info| {
+                let hash_ptr = ffi::transactionInfoHash(info);
+                hash_ptr.as_ref().map(|s| s.to_string()).unwrap_or_default()
+            })
+        }
+    }
+
+    pub fn serialize(&self) -> Option<TransactionInfo> {
+        let fee = self.fee()?;
+        let amount = self.amount()?;
+        let block_height = self.confirmations()?;
+        let tx_hash = self.hash().unwrap_or_default();
+
+        Some(TransactionInfo {
+            fee: monero::Amount::from_pico(fee),
+            amount: monero::Amount::from_pico(amount),
+            confirmations: block_height,
+            tx_hash,
+        })
+    }
+}
+
+pub mod monero_serde {
+    use monero::Amount;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(x: &Amount, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        s.serialize_u64(x.as_pico())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Amount, <D as Deserializer<'de>>::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let picos = u64::deserialize(deserializer)?;
+        let amount = Amount::from_pico(picos);
+
+        Ok(amount)
+    }
+}
+
 /// Create a backoff strategy for retrying a function.
 /// Default max elapsed time is 5 minutes, default max interval is 30 seconds.
 fn backoff(
@@ -1920,7 +2145,7 @@ mod tests {
         }
 
         // Ensure percentages are valid (non-negative and sum to approximately 1.0)
-        if percentages.iter().any(|&p| p < 0.0 || p > 1.0) {
+        if percentages.iter().any(|&p| !(0.0..=1.0).contains(&p)) {
             return TestResult::discard();
         }
 
@@ -1949,7 +2174,7 @@ mod tests {
             return TestResult::discard();
         }
 
-        if percentages.iter().any(|&p| p < 0.0 || p > 1.0) {
+        if percentages.iter().any(|&p| !(0.0..=1.0).contains(&p)) {
             return TestResult::discard();
         }
 
@@ -1975,7 +2200,7 @@ mod tests {
             return TestResult::discard();
         }
 
-        if percentages.iter().any(|&p| p < 0.0 || p > 1.0) {
+        if percentages.iter().any(|&p| !(0.0..=1.0).contains(&p)) {
             return TestResult::discard();
         }
 

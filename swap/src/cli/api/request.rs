@@ -30,6 +30,7 @@ use serde_json::json;
 use std::convert::TryInto;
 use std::future::Future;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -468,6 +469,134 @@ impl Request for GetMoneroAddressesArgs {
     async fn request(self, ctx: Arc<Context>) -> Result<Self::Response> {
         let addresses = ctx.db.get_monero_addresses().await?;
         Ok(GetMoneroAddressesResponse { addresses })
+    }
+}
+
+#[typeshare]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetMoneroHistoryArgs;
+
+#[typeshare]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct GetMoneroHistoryResponse {
+    pub transactions: Vec<monero_sys::TransactionInfo>,
+}
+
+impl Request for GetMoneroHistoryArgs {
+    type Response = GetMoneroHistoryResponse;
+
+    async fn request(self, ctx: Arc<Context>) -> Result<Self::Response> {
+        let wallet = ctx
+            .monero_manager
+            .as_ref()
+            .context("Monero wallet manager not available")?;
+        let wallet = wallet.main_wallet().await;
+
+        let transactions = wallet.history().await;
+        Ok(GetMoneroHistoryResponse { transactions })
+    }
+}
+
+#[typeshare]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetMoneroMainAddressArgs;
+
+#[typeshare]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct GetMoneroMainAddressResponse {
+    #[typeshare(serialized_as = "String")]
+    pub address: monero::Address,
+}
+
+impl Request for GetMoneroMainAddressArgs {
+    type Response = GetMoneroMainAddressResponse;
+
+    async fn request(self, ctx: Arc<Context>) -> Result<Self::Response> {
+        let wallet = ctx
+            .monero_manager
+            .as_ref()
+            .context("Monero wallet manager not available")?;
+        let wallet = wallet.main_wallet().await;
+        let address = wallet.main_address().await;
+        Ok(GetMoneroMainAddressResponse { address })
+    }
+}
+
+// New request type for Monero balance
+#[typeshare]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetMoneroBalanceArgs;
+
+#[typeshare]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct GetMoneroBalanceResponse {
+    #[typeshare(serialized_as = "string")]
+    // Assuming monero::Amount serializes to string via typeshare
+    pub total_balance: crate::monero::Amount,
+    #[typeshare(serialized_as = "string")]
+    pub unlocked_balance: crate::monero::Amount,
+}
+
+impl Request for GetMoneroBalanceArgs {
+    type Response = GetMoneroBalanceResponse;
+
+    async fn request(self, ctx: Arc<Context>) -> Result<Self::Response> {
+        let wallet_manager = ctx
+            .monero_manager
+            .as_ref()
+            .context("Monero wallet manager not available")?;
+        let wallet = wallet_manager.main_wallet().await;
+
+        let total_balance = wallet.total_balance().await;
+        let unlocked_balance = wallet.unlocked_balance().await;
+
+        Ok(GetMoneroBalanceResponse {
+            total_balance: crate::monero::Amount::from_piconero(total_balance.as_pico()),
+            unlocked_balance: crate::monero::Amount::from_piconero(unlocked_balance.as_pico()),
+        })
+    }
+}
+
+// New request type for sending Monero
+#[typeshare]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendMoneroArgs {
+    #[typeshare(serialized_as = "String")]
+    pub address: String,
+    pub amount: crate::monero::Amount,
+}
+
+#[typeshare]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SendMoneroResponse {
+    pub tx_hash: String,
+    pub amount_sent: crate::monero::Amount,
+}
+
+impl Request for SendMoneroArgs {
+    type Response = SendMoneroResponse;
+
+    async fn request(self, ctx: Arc<Context>) -> Result<Self::Response> {
+        let wallet_manager = ctx
+            .monero_manager
+            .as_ref()
+            .context("Monero wallet manager not available")?;
+        let wallet = wallet_manager.main_wallet().await;
+
+        // Parse the address
+        let address = monero::Address::from_str(&self.address)
+            .map_err(|e| anyhow::anyhow!("Invalid Monero address: {}", e))?;
+
+        // Convert our amount to monero-sys amount
+        let amount = monero::Amount::from_piconero(self.amount.as_piconero());
+
+        // Send the transaction with GUI-specific retry logic (single retry only)
+        let receipt = wallet.transfer_gui(&address, amount.into()).await?;
+
+        Ok(SendMoneroResponse {
+            tx_hash: receipt.txid,
+            amount_sent: crate::monero::Amount::from_piconero(amount.as_piconero()),
+        })
     }
 }
 
@@ -1655,6 +1784,42 @@ impl CheckSeedArgs {
         let seed = MoneroSeed::from_string(Language::English, Zeroizing::new(self.seed));
         Ok(CheckSeedResponse {
             available: seed.is_ok(),
+        })
+    }
+}
+
+// New request type for Monero sync progress
+#[typeshare]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetMoneroSyncProgressArgs;
+
+#[typeshare]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct GetMoneroSyncProgressResponse {
+    #[typeshare(serialized_as = "number")]
+    pub current_block: u64,
+    #[typeshare(serialized_as = "number")]
+    pub target_block: u64,
+    #[typeshare(serialized_as = "number")]
+    pub progress_percentage: f32,
+}
+
+impl Request for GetMoneroSyncProgressArgs {
+    type Response = GetMoneroSyncProgressResponse;
+
+    async fn request(self, ctx: Arc<Context>) -> Result<Self::Response> {
+        let wallet_manager = ctx
+            .monero_manager
+            .as_ref()
+            .context("Monero wallet manager not available")?;
+        let wallet = wallet_manager.main_wallet().await;
+
+        let sync_progress = wallet.call(|wallet| wallet.sync_progress()).await;
+
+        Ok(GetMoneroSyncProgressResponse {
+            current_block: sync_progress.current_block,
+            target_block: sync_progress.target_block,
+            progress_percentage: sync_progress.percentage(),
         })
     }
 }

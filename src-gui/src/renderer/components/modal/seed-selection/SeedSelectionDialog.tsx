@@ -1,5 +1,4 @@
 import {
-  Button,
   Dialog,
   DialogActions,
   DialogContent,
@@ -14,13 +13,18 @@ import {
 import { useState, useEffect } from "react";
 import { usePendingSeedSelectionApproval } from "store/hooks";
 import { resolveApproval, checkSeed } from "renderer/rpc";
+import { SeedChoice } from "models/tauriModel";
+import PromiseInvokeButton from "renderer/components/PromiseInvokeButton";
 
 export default function SeedSelectionDialog() {
   const pendingApprovals = usePendingSeedSelectionApproval();
-  const [selectedOption, setSelectedOption] = useState<string>("RandomSeed");
+  const [selectedOption, setSelectedOption] = useState<
+    SeedChoice["type"] | undefined
+  >("RandomSeed");
   const [customSeed, setCustomSeed] = useState<string>("");
   const [isSeedValid, setIsSeedValid] = useState<boolean>(false);
-  const approval = pendingApprovals[0]; // Handle the first pending approval
+
+  const approval = pendingApprovals[0];
 
   useEffect(() => {
     if (selectedOption === "FromSeed" && customSeed.trim()) {
@@ -36,25 +40,27 @@ export default function SeedSelectionDialog() {
     }
   }, [customSeed, selectedOption]);
 
-  const handleClose = async (accept: boolean) => {
-    if (!approval) return;
+  const accept = async () => {
+    if (!approval)
+      throw new Error("No approval request found for seed selection");
 
-    if (accept) {
-      const seedChoice =
-        selectedOption === "RandomSeed"
-          ? { type: "RandomSeed" }
-          : { type: "FromSeed", content: { seed: customSeed } };
+    const seedChoice: SeedChoice =
+      selectedOption === "RandomSeed"
+        ? { type: "RandomSeed" }
+        : { type: "FromSeed", content: { seed: customSeed } };
 
-      await resolveApproval(approval.request_id, seedChoice);
-    } else {
-      // On reject, just close without approval
-      await resolveApproval(approval.request_id, { type: "RandomSeed" });
-    }
+    await resolveApproval<SeedChoice>(approval.request_id, seedChoice);
   };
 
   if (!approval) {
     return null;
   }
+
+  // Disable the button if the user is restoring from a seed and the seed is invalid
+  const isDisabled =
+    selectedOption === "FromSeed"
+      ? customSeed.trim().length === 0 || !isSeedValid
+      : false;
 
   return (
     <Dialog open={true} maxWidth="sm" fullWidth>
@@ -67,7 +73,9 @@ export default function SeedSelectionDialog() {
         <FormControl component="fieldset">
           <RadioGroup
             value={selectedOption}
-            onChange={(e) => setSelectedOption(e.target.value)}
+            onChange={(e) =>
+              setSelectedOption(e.target.value as SeedChoice["type"])
+            }
           >
             <FormControlLabel
               value="RandomSeed"
@@ -104,17 +112,14 @@ export default function SeedSelectionDialog() {
         )}
       </DialogContent>
       <DialogActions>
-        <Button
-          onClick={() => handleClose(true)}
+        <PromiseInvokeButton
+          onInvoke={accept}
           variant="contained"
-          disabled={
-            selectedOption === "FromSeed"
-              ? !customSeed.trim() || !isSeedValid
-              : false
-          }
+          disabled={isDisabled}
+          requiresContext={false}
         >
-          Confirm
-        </Button>
+          Continue
+        </PromiseInvokeButton>
       </DialogActions>
     </Dialog>
   );

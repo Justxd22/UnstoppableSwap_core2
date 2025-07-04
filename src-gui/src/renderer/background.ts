@@ -24,6 +24,8 @@ import {
   listSellersAtRendezvousPoint,
   refreshApprovals,
   updateAllNodeStatuses,
+  fetchAndUpdateBackgroundItems,
+  fetchAndUpdateApprovalItems,
 } from "./rpc";
 import { store } from "./store/storeRenderer";
 import { exhaustiveGuard } from "utils/typescriptUtils";
@@ -45,7 +47,7 @@ const UPDATE_RATE_INTERVAL = 5 * 60 * 1_000;
 // Fetch all conversations every 10 minutes
 const FETCH_CONVERSATIONS_INTERVAL = 10 * 60 * 1_000;
 
-// Fetch pending approvals every 10 seconds
+// Fetch pending approvals every 2 seconds
 const FETCH_PENDING_APPROVALS_INTERVAL = 2 * 1_000;
 
 function setIntervalImmediate(callback: () => void, interval: number): void {

@@ -1,7 +1,7 @@
 //! This module contains the bridge between the Monero C++ API and the Rust code.
 //! It uses the [cxx](https://cxx.rs) crate to generate the actual bindings.
 
-use cxx::CxxString;
+use cxx::{CxxString, UniquePtr};
 use tracing::Level;
 
 /// This is the main ffi module that exposes the Monero C++ API to Rust.
@@ -54,10 +54,11 @@ pub mod ffi {
         /// A pending transaction.
         type PendingTransaction;
 
-        /// A wallet listener.
-        ///
-        /// Can be attached to a wallet and will get notified upon specific events.
-        type WalletListener;
+        /// A struct containing transaction history.
+        type TransactionHistory;
+
+        /// A struct containing a single transaction.
+        type TransactionInfo;
 
         /// Get the wallet manager.
         fn getWalletManager() -> Result<*mut WalletManager>;
@@ -99,6 +100,24 @@ pub mod ffi {
             kdf_rounds: u64,
             seed_offset: &CxxString,
         ) -> Result<*mut Wallet>;
+
+        type FunctionBasedListener;
+
+        type WalletListener;
+
+        unsafe fn create_listener(
+            on_spent:    usize,
+            on_received: usize,
+            on_unconfirmed_received: usize,
+            on_new_block: usize,
+            on_updated: usize,
+            on_refreshed: usize,
+            on_reorg: usize,
+            on_pool_tx_removed: usize,
+            on_get_password: usize,
+        ) -> *mut WalletListener;
+
+        unsafe fn destroy_listener(ptr: *mut FunctionBasedListener);
 
         ///virtual Wallet * openWallet(const std::string &path, const std::string &password, NetworkType nettype, uint64_t kdf_rounds = 1, WalletListener * listener = nullptr) = 0;
         unsafe fn openWallet(
@@ -270,6 +289,27 @@ pub mod ffi {
             self: Pin<&mut Wallet>,
             tx: *mut PendingTransaction,
         ) -> Result<()>;
+
+        /// Get the transaction history.
+        unsafe fn walletHistory(wallet: *mut Wallet) -> UniquePtr<TransactionHistory>;
+
+        /// Get the transaction history count.
+        fn count(self: &TransactionHistory) -> i32;
+
+        /// Get a transaction from the history by index.
+        unsafe fn transaction(self: &TransactionHistory, index: i32) -> *mut TransactionInfo;
+
+        /// Get the amount of the transaction.
+        fn amount(self: &TransactionInfo) -> u64;
+
+        /// Get the fee of the transaction.
+        fn fee(self: &TransactionInfo) -> u64;
+
+        /// Get the confirmations of the transaction.
+        fn confirmations(self: &TransactionInfo) -> u64;
+
+        /// Get the hash of the transaction.
+        fn transactionInfoHash(tx_info: &TransactionInfo) -> UniquePtr<CxxString>;
     }
 }
 

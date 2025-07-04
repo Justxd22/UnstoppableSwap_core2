@@ -10,9 +10,11 @@ use swap::cli::{
             BalanceArgs, BuyXmrArgs, CancelAndRefundArgs, CheckElectrumNodeArgs,
             CheckElectrumNodeResponse, CheckMoneroNodeArgs, CheckMoneroNodeResponse, CheckSeedArgs,
             CheckSeedResponse, ExportBitcoinWalletArgs, GetCurrentSwapArgs, GetDataDirArgs,
-            GetHistoryArgs, GetLogsArgs, GetMoneroAddressesArgs, GetPendingApprovalsResponse,
-            GetSwapInfoArgs, GetSwapInfosAllArgs, ListSellersArgs, MoneroRecoveryArgs, RedactArgs,
-            ResolveApprovalArgs, ResumeSwapArgs, SuspendCurrentSwapArgs, WithdrawBtcArgs,
+            GetHistoryArgs, GetLogsArgs, GetMoneroAddressesArgs, GetMoneroBalanceArgs, 
+            GetMoneroHistoryArgs, GetMoneroMainAddressArgs, GetMoneroSyncProgressArgs,
+            GetPendingApprovalsResponse, GetSwapInfoArgs, GetSwapInfosAllArgs, ListSellersArgs, 
+            MoneroRecoveryArgs, RedactArgs, ResolveApprovalArgs, ResumeSwapArgs, 
+            SendMoneroArgs, SuspendCurrentSwapArgs, WithdrawBtcArgs,
         },
         tauri_bindings::{TauriContextStatusEvent, TauriEmitter, TauriHandle, TauriSettings},
         Context, ContextBuilder,
@@ -200,6 +202,11 @@ pub fn run() {
             resolve_approval_request,
             redact,
             save_txt_files,
+            get_monero_history,
+            get_monero_main_address,
+            get_monero_balance,
+            send_monero,
+            get_monero_sync_progress,
             check_seed,
             get_pending_approvals,
         ])
@@ -251,7 +258,11 @@ tauri_command!(get_swap_info, GetSwapInfoArgs);
 tauri_command!(get_swap_infos_all, GetSwapInfosAllArgs, no_args);
 tauri_command!(get_history, GetHistoryArgs, no_args);
 tauri_command!(get_monero_addresses, GetMoneroAddressesArgs, no_args);
+tauri_command!(get_monero_history, GetMoneroHistoryArgs, no_args);
 tauri_command!(get_current_swap, GetCurrentSwapArgs, no_args);
+
+// Add the new command for getting Monero main address
+tauri_command!(get_monero_main_address, GetMoneroMainAddressArgs, no_args);
 
 /// Here we define Tauri commands whose implementation is not delegated to the Request trait
 #[tauri::command]
@@ -454,3 +465,7 @@ async fn initialize_context(
         }
     }
 }
+
+tauri_command!(get_monero_balance, GetMoneroBalanceArgs, no_args);
+tauri_command!(send_monero, SendMoneroArgs);
+tauri_command!(get_monero_sync_progress, GetMoneroSyncProgressArgs, no_args);
