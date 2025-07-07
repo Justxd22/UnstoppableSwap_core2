@@ -22,11 +22,16 @@ import {
   Chip,
   IconButton,
   Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from "@mui/material";
 import {
   Send as SendIcon,
   Refresh as RefreshIcon,
   OpenInNew as OpenInNewIcon,
+  AccountBalance as DfxIcon,
 } from "@mui/icons-material";
 import { open } from "@tauri-apps/plugin-shell";
 import ActionableMonospaceTextBox from "../../other/ActionableMonospaceTextBox";
@@ -44,7 +49,82 @@ import {
   initializeMoneroWallet,
   sendMoneroTransaction,
   refreshMoneroWallet,
+  dfxAuthenticate,
 } from "renderer/rpc";
+import DFXSwissLogo from "assets/dfx-logo.svg";
+
+function DFXLogo({ height = 24 }: { height?: number }) {
+  return (
+    <Box sx={{ backgroundColor: "white", borderRadius: 1, display: "flex", alignItems: "center", padding: 1, height }}>
+      <img src={DFXSwissLogo} alt="DFX Swiss" style={{ height: "100%", flex: 1 }} />
+    </Box>
+  );
+}
+
+// Component for DFX button and modal
+function DfxButton() {
+  const [dfxUrl, setDfxUrl] = useState<string | null>(null);
+
+  const handleOpenDfx = async () => {
+    // Get authentication token and URL (this will initialize DFX if needed)
+    const response = await dfxAuthenticate();
+    setDfxUrl(response.kyc_url);
+    return response;
+  };
+
+  const handleCloseModal = () => {
+    setDfxUrl(null);
+  };
+
+  return (
+    <>
+      <PromiseInvokeButton
+        variant="outlined"
+        size="small"
+        startIcon={<DFXLogo height={12} />}
+        onInvoke={handleOpenDfx}
+        displayErrorSnackbar={true}
+      >
+        Fiat Conversion
+      </PromiseInvokeButton>
+
+      <Dialog
+        open={dfxUrl != null}
+        onClose={handleCloseModal}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <DFXLogo />
+            <Button onClick={handleCloseModal} variant="outlined">
+              Close
+            </Button>
+          </Box>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0, height: "min(40rem, 80vh)" }}>
+          {dfxUrl && (
+            <iframe
+              src={dfxUrl}
+              style={{
+                width: "100%",
+                height: "100%",
+                border: "none",
+              }}
+              title="DFX Swiss"
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
 
 // Component for displaying wallet address and balance
 function WalletOverview({ mainAddress, balance, isRefreshing, onRefresh }) {
@@ -64,21 +144,24 @@ function WalletOverview({ mainAddress, balance, isRefreshing, onRefresh }) {
               }}
             >
               <Typography variant="h6">Balance</Typography>
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={
-                  isRefreshing ? (
-                    <CircularProgress size={16} />
-                  ) : (
-                    <RefreshIcon />
-                  )
-                }
-                onClick={onRefresh}
-                disabled={isRefreshing}
-              >
-                {isRefreshing ? "Refreshing..." : "Refresh"}
-              </Button>
+              <Stack direction="row" spacing={1}>
+                <DfxButton />
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={
+                    isRefreshing ? (
+                      <CircularProgress size={16} />
+                    ) : (
+                      <RefreshIcon />
+                    )
+                  }
+                  onClick={onRefresh}
+                  disabled={isRefreshing}
+                >
+                  {isRefreshing ? "Refreshing..." : "Refresh"}
+                </Button>
+              </Stack>
             </Box>
             <Divider />
             <Box
